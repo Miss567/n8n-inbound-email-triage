@@ -1,0 +1,433 @@
+{
+  "name": "AI 邮件助手 - 邮件自动处理流（骨架，导入后需替换占位符）",
+  "notes": "【骨架说明】本文件是 n8n 工作流模板骨架，不是开箱即用成品。导入 n8n 后请按以下步骤替换占位符：\n1) 邮箱凭据：在 n8n Credentials 中新建 IMAP 凭据（emailReadImap）与 SMTP 凭据，把 {{IMAP_CREDENTIAL_ID}}/{{IMAP_CREDENTIAL_NAME}}、{{SMTP_CREDENTIAL_ID}}/{{SMTP_CREDENTIAL_NAME}} 替换为实际值；\n2) 服务地址：把 {{CLASSIFY_API_URL}}、{{DRAFT_API_URL}}、{{DB_WRITE_API_URL}}、{{APPROVAL_NOTIFY_WEBHOOK_URL}} 替换为 code/webhook_server.py 部署后的真实 URL（或客户环境内网地址）；\n3) 触发方式三选一：生产环境只保留一种入口——a) 定时轮询(Schedule+IMAP)，b) IMAP 自动轮询(把 IMAP 节点设为 Active 触发器并删掉 Schedule 或 Webhook)，c) Webhook（由 Gmail API/Outlook/Telegram 推送转发而来）。本模板中 Webhook 与 Schedule 两条线同时连到“消息规范化”，同时启用会重复处理，请按需停用；\n4) 人工审批开关：默认 autoSend=false（所有草稿先进入待审队列）。改“审批开关-Code”节点中的常量即可切换为直接发送；\n5) DeepSeek Key 等只放在服务端环境变量或 config.example.env 中，不要写进 n8n 节点；分类/拟稿由 FastAPI 服务调用 DeepSeek。\n需要接入 Gmail/Outlook/Telegram 时，在“触发-Webhook(可选)”前加官方推送适配层（见 code/email_ingest.py TODO）。",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "days",
+              "type": "number",
+              "value": 0
+            },
+            {
+              "field": "hours",
+              "type": "number",
+              "value": 0
+            },
+            {
+              "field": "minutes",
+              "type": "number",
+              "value": 15
+            }
+          ],
+          "triggerAtHour": 9,
+          "triggerAtMinute": 0
+        },
+        "timezone": "Asia/Shanghai"
+      },
+      "id": "trigger-schedule",
+      "name": "触发-定时轮询(Schedule)",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        -1280,
+        300
+      ],
+      "notes": "可选触发器 A：每 15 分钟驱动 IMAP 收信。可按客户邮件量调整为每小时/每天。"
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "{{EMAIL_INBOUND_WEBHOOK_PATH}}",
+        "responseMode": "onReceived",
+        "options": {}
+      },
+      "id": "trigger-webhook",
+      "name": "触发-Webhook(可选)",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1.2,
+      "webhookId": "{{WEBHOOK_ID_EMAIL_INBOUND}}",
+      "position": [
+        -1280,
+        780
+      ],
+      "notes": "可选触发器 B：接收 Gmail API/Outlook/Telegram/表单系统转发来的 JSON 消息。生产环境与定时触发器二选一。"
+    },
+    {
+      "parameters": {
+        "mailbox": "INBOX",
+        "postProcessAction": "read",
+        "format": "resolved",
+        "options": {}
+      },
+      "id": "imap-read",
+      "name": "收信-IMAP轮询",
+      "type": "n8n-nodes-base.emailReadImap",
+      "typeVersion": 1.2,
+      "position": [
+        -1000,
+        300
+      ],
+      "credentials": {
+        "emailReadImap": {
+          "id": "{{IMAP_CREDENTIAL_ID}}",
+          "name": "{{IMAP_CREDENTIAL_NAME}}"
+        }
+      },
+      "notes": "IMAP 收信：凭据在 n8n Credentials 中新建（host/port/user/password/ssl）。客户需提供 {{IMAP_HOST}}、{{IMAP_USER}}、{{IMAP_PASSWORD}}（或应用专用密码）。"
+    },
+    {
+      "parameters": {
+        "jsCode": "// 将不同入口(IMAP/Webhook/渠道API)的原始消息统一为内部结构\n// IMAP 解析结果常见字段: from / to / date / subject / text / html\n// Webhook 渠道常见字段: from / sender / subject / body / content / message / channel / receivedAt\nconst items = $input.all().map(({ json }) => {\n  const rawBody = json.body ?? json.text ?? json.content ?? json.message ?? '';\n  return {\n    json: {\n      messageId: json.messageId ?? json.uid ?? json.id ?? String(Date.now()),\n      channel: json.channel ?? 'email', // email / telegram / web_form / comment ...\n      from: json.from ?? json.sender ?? json.fromEmail ?? json.from_email ?? '',\n      to: json.to ?? '',\n      subject: json.subject ?? json.title ?? '(无主题)',\n      body: String(rawBody).slice(0, 20000),\n      receivedAt: json.receivedAt ?? json.date ?? json.received_at ?? new Date().toISOString(),\n    },\n  };\n});\nreturn items;"
+      },
+      "id": "消息规范化",
+      "name": "消息规范化",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -720,
+        300
+      ],
+      "notes": "Code 节点，导入后按注释核对字段名与业务规则。"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "{{CLASSIFY_API_URL}}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "{\"message_id\": \"={{ $json.messageId }}\", \"channel\": \"={{ $json.channel }}\", \"from\": \"={{ $json.from }}\", \"subject\": \"={{ $json.subject }}\", \"body\": \"={{ $json.body }}\", \"language\": \"{{CLASSIFY_LANGUAGE}}\"}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "分类调用-HTTP",
+      "name": "分类调用-HTTP",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -440,
+        300
+      ],
+      "notes": "HTTP Request 节点：URL 与请求体中的占位符需按交付文档替换。该节点不自动带鉴权头，如需鉴权请在 n8n 配置 Header Auth 并添加 Authorization 头。 请求体占位符 {{CLASSIFY_LANGUAGE}} 在交付时替换（zh/en/auto）。"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "{{DRAFT_API_URL}}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "{\"message_id\": \"={{ $json.messageId }}\", \"channel\": \"={{ $json.channel }}\", \"from\": \"={{ $json.from }}\", \"subject\": \"={{ $json.subject }}\", \"body\": \"={{ $json.body }}\", \"category\": \"={{ $json.data.category ?? $json.category }}\", \"category_zh\": \"={{ $json.data.category_zh ?? $json.category_zh }}\", \"sentiment\": \"={{ $json.data.sentiment ?? $json.sentiment }}\", \"key_points\": \"={{ $json.data.key_points ?? $json.key_points }}\", \"language\": \"{{CLASSIFY_LANGUAGE}}\", \"tone\": \"{{REPLY_TONE}}\"}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "拟稿调用-HTTP",
+      "name": "拟稿调用-HTTP",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -160,
+        300
+      ],
+      "notes": "HTTP Request 节点：URL 与请求体中的占位符需按交付文档替换。该节点不自动带鉴权头，如需鉴权请在 n8n 配置 Header Auth 并添加 Authorization 头。 响应约定形如 {\"ok\":true,\"data\":{\"draft\":\"...\",\"review_required\":false}}。"
+    },
+    {
+      "parameters": {
+        "jsCode": "// 人工审批开关：false = 草稿进入人工待审队列（推荐首月使用）；true = AI 草稿自动发送\n// 接入真实系统后，可把 autoSend 改为读取数据库/环境变量（例如 {{AUTO_SEND_SWITCH}}），\n// 或按规则自动降级：低置信度、投诉类、含附件/链接请求一律强制人审。\nconst inputItem = $input.first().json;\nconst autoSend = false; // TODO: 交付时按客户合同设置；敏感客户默认保持 false\nconst reviewRequiredByRule =\n  (inputItem.category === 'complaint') ||\n  (Number(inputItem.confidence ?? 1) < 0.6);\nconst effectiveAutoSend = autoSend && !reviewRequiredByRule;\nreturn [{\n  json: {\n    ...inputItem,\n    draft: inputItem.data?.draft ?? inputItem.draft ?? '',\n    confidence: inputItem.data?.confidence ?? inputItem.confidence ?? 1,\n    autoSend: effectiveAutoSend,\n  },\n}];"
+      },
+      "id": "审批开关-Code",
+      "name": "审批开关-Code",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        120,
+        300
+      ],
+      "notes": "Code 节点，导入后按注释核对字段名与业务规则。"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {},
+          "conditions": [
+            {
+              "id": "cond-autosend",
+              "leftValue": "={{ $json.autoSend }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true"
+              }
+            }
+          ]
+        }
+      },
+      "id": "if-approval",
+      "name": "IF-人工审批开关",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.1,
+      "position": [
+        400,
+        300
+      ],
+      "notes": "true 分支=自动发送；false 分支=待人工审批。导入后请在 n8n UI 中复核 IF 条件的字段类型，避免布尔值误判。"
+    },
+    {
+      "parameters": {
+        "fromEmail": "{{SMTP_FROM_EMAIL}}",
+        "toEmail": "={{ $json.from }}",
+        "subject": "={{ $json.subject }}",
+        "emailFormat": "text",
+        "text": "={{ $json.draft }}",
+        "options": {}
+      },
+      "id": "smtp-send",
+      "name": "发送邮件-SMTP",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 1.2,
+      "position": [
+        700,
+        60
+      ],
+      "credentials": {
+        "smtp": {
+          "id": "{{SMTP_CREDENTIAL_ID}}",
+          "name": "{{SMTP_CREDENTIAL_NAME}}"
+        }
+      },
+      "notes": "SMTP 发送。若客户要求用 Gmail/Outlook 官方 API 发送，请改为对应官方节点或调用 webhook_server 的发送适配层。"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "{{DB_WRITE_API_URL}}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "{\"action\": \"upsert_message\", \"message_id\": \"={{ $json.messageId }}\", \"channel\": \"={{ $json.channel }}\", \"from\": \"={{ $json.from }}\", \"subject\": \"={{ $json.subject }}\", \"body\": \"={{ $json.body }}\", \"category\": \"={{ $json.category }}\", \"draft\": \"={{ $json.draft }}\", \"status\": \"sent\", \"notes\": \"autoSend 分支落库\"}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "落库-记录已发送",
+      "name": "落库-记录已发送",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        980,
+        60
+      ],
+      "notes": "HTTP Request 节点：URL 与请求体中的占位符需按交付文档替换。该节点不自动带鉴权头，如需鉴权请在 n8n 配置 Header Auth 并添加 Authorization 头。"
+    },
+    {
+      "parameters": {
+        "jsCode": "// 人工审批分支：给草稿打 pending_review 标记，生成队列 ID，并拼通知文本\nconst inputItem = $input.first().json;\nconst queueId = 'q-' + (inputItem.messageId || Date.now());\nreturn [{\n  json: {\n    ...inputItem,\n    queueId: queueId,\n    dbStatus: 'pending_review',\n    notifyText:\n      '[AI邮件助手-待审] ' + (inputItem.subject || '(无主题)') +\n      '\\n分类: ' + (inputItem.category || 'unknown') +\n      '\\n拟稿: ' + String(inputItem.draft || '').slice(0, 2000),\n  },\n}];"
+      },
+      "id": "待审队列-Code",
+      "name": "待审队列-Code",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        700,
+        620
+      ],
+      "notes": "Code 节点，导入后按注释核对字段名与业务规则。"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "{{APPROVAL_NOTIFY_WEBHOOK_URL}}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "{\"text\": \"={{ $json.notifyText }}\", \"queue_id\": \"={{ $json.queueId }}\"}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "通知人工审核-HTTP",
+      "name": "通知人工审核-HTTP",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        980,
+        780
+      ],
+      "notes": "HTTP Request 节点：URL 与请求体中的占位符需按交付文档替换。该节点不自动带鉴权头，如需鉴权请在 n8n 配置 Header Auth 并添加 Authorization 头。 默认发给企业微信/Telegram/Slack 机器人占位地址；如客户不用机器人可删除本节点。"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "{{DB_WRITE_API_URL}}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "{\"action\": \"upsert_message\", \"message_id\": \"={{ $json.messageId }}\", \"channel\": \"={{ $json.channel }}\", \"from\": \"={{ $json.from }}\", \"subject\": \"={{ $json.subject }}\", \"body\": \"={{ $json.body }}\", \"category\": \"={{ $json.category }}\", \"draft\": \"={{ $json.draft }}\", \"queue_id\": \"={{ $json.queueId }}\", \"status\": \"={{ $json.dbStatus }}\"}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "落库-记录待审",
+      "name": "落库-记录待审",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1260,
+        620
+      ],
+      "notes": "HTTP Request 节点：URL 与请求体中的占位符需按交付文档替换。该节点不自动带鉴权头，如需鉴权请在 n8n 配置 Header Auth 并添加 Authorization 头。 人工审批通过后的“发送”动作，请在交付时追加：Webhook /approve → 按 queue_id 查库取回草稿 → SMTP 发送。"
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "{{APPROVE_WEBHOOK_PATH}}",
+        "responseMode": "onReceived",
+        "options": {}
+      },
+      "id": "webhook-approve",
+      "name": "人工审批回调(Webhook)",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1.2,
+      "webhookId": "{{WEBHOOK_ID_APPROVE}}",
+      "position": [
+        700,
+        980
+      ],
+      "notes": "预留：客户点击“同意发送”后回调本节点，入参 {queue_id, decision:approve|reject}。默认未接线，避免导入即运行；交付时连接：本节点 →（可选：按 queue_id 查库）→ 发送邮件-SMTP。"
+    }
+  ],
+  "connections": {
+    "触发-定时轮询(Schedule)": {
+      "main": [
+        [
+          {
+            "node": "收信-IMAP轮询",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "收信-IMAP轮询": {
+      "main": [
+        [
+          {
+            "node": "消息规范化",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "触发-Webhook(可选)": {
+      "main": [
+        [
+          {
+            "node": "消息规范化",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "消息规范化": {
+      "main": [
+        [
+          {
+            "node": "分类调用-HTTP",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "分类调用-HTTP": {
+      "main": [
+        [
+          {
+            "node": "拟稿调用-HTTP",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "拟稿调用-HTTP": {
+      "main": [
+        [
+          {
+            "node": "审批开关-Code",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "审批开关-Code": {
+      "main": [
+        [
+          {
+            "node": "IF-人工审批开关",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF-人工审批开关": {
+      "main": [
+        [
+          {
+            "node": "发送邮件-SMTP",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "待审队列-Code",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "发送邮件-SMTP": {
+      "main": [
+        [
+          {
+            "node": "落库-记录已发送",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "待审队列-Code": {
+      "main": [
+        [
+          {
+            "node": "落库-记录待审",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "通知人工审核-HTTP",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "pinData": {},
+  "active": false,
+  "meta": {
+    "templateCredsSetupCompleted": false
+  }
+}
