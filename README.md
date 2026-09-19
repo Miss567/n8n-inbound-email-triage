@@ -30,14 +30,15 @@ confidence messages always land in a human queue.
 
 ## What is in here
 
-| Path | What it is |
-|---|---|
-| `n8n/workflow_email_triage.json` | Import-ready n8n workflow (14 nodes). Credential fields are placeholders — see below. |
-| `prompts/prompts_en.md` | The classification + drafting prompts, including the JSON contract. |
+| File                                                       | What it is                                                   |
+| ---------------------------------------------------------- | ------------------------------------------------------------ |
+| [`workflow_email_triage.json`](workflow_email_triage.json) | Import-ready n8n workflow (14 nodes). Credential fields are placeholders — see below. |
+| [`prompts_en.md`](prompts_en.md)                           | The classification + drafting prompts, including the JSON contract. |
+| [`LICENSE`](LICENSE)                                       | MIT — use it, adapt it, ship it.                             |
 
 ## Import (3 minutes)
 
-1. n8n → **Workflows → Import from File** → `n8n/workflow_email_triage.json`
+1. n8n → **Workflows → Import from File** → `workflow_email_triage.json`
 2. Create two credentials and re-select them on the nodes (IDs in the file are placeholders):
    - **IMAP** (read) — Gmail: enable IMAP + create an app password
    - **SMTP** (send) — same mailbox
