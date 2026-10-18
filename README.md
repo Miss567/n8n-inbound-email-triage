@@ -37,9 +37,9 @@ confidence messages always land in a human queue.
 
 | File | What it is |
 |---|---|
-| [`workflow/workflow_email_triage.json`](workflow/workflow_email_triage.json) | Import-ready n8n workflow — 14 functional nodes plus 7 sticky notes explaining each step. Credential fields are placeholders — see below. |
-| [`workflow/workflow_email_triage.n8n-ai-version.json`](workflow/workflow_email_triage.n8n-ai-version.json) | Variant using n8n's built-in AI nodes instead of raw HTTP calls. |
+| [`workflow_email_triage.json`](workflow_email_triage.json) | Import-ready n8n workflow — 14 functional nodes plus 7 sticky notes explaining each step. Credential fields are placeholders — see below. |
 | [`prompts_en.md`](prompts_en.md) | The classification + drafting prompts, including the JSON contract. |
+| [`AUDIT-SAMPLE-workflow-reliability.md`](AUDIT-SAMPLE-workflow-reliability.md) | A real reliability audit run against the workflow above — 8 findings, including one that contradicts a claim this README used to make. |
 | [`LICENSE`](LICENSE) | MIT — use it, adapt it, ship it. |
 
 ## Import (3 minutes)
